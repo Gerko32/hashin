@@ -113,7 +113,7 @@ def _download(url, binary=False):
     return r.read().decode(encoding)
 
 
-def run(specs, requirements_file, *args, **kwargs):
+def run(specs, requirements_file, upgrade_versions, *args, **kwargs):
     if not specs:  # then, assume all in the requirements file
         regex = re.compile(r"(^|\n|\n\r).*==")
         specs = []
@@ -123,11 +123,13 @@ def run(specs, requirements_file, *args, **kwargs):
                 if regex.search(line) and not line.lstrip().startswith("#"):
                     req = Requirement(line.split("\\")[0])
                     # Deliberately strip the specifier (aka. the version)
-                    version = req.specifier
-                    req.specifier = None
+                    if upgrade_versions:
+                        version = req.specifier
+                        req.specifier = None
+                        previous_versions[str(req)] = version
                     specs.append(str(req))
-                    previous_versions[str(req)] = version
-        kwargs["previous_versions"] = previous_versions
+        if upgrade_versions:
+            kwargs["previous_versions"] = previous_versions
 
     if isinstance(specs, str):
         specs = [specs]
@@ -535,8 +537,8 @@ CLASSIFY_EXE_RE = re.compile(
     .(?P<format>(exe|msi))
     (\#md5=.*)?
     $
-""",
     re.VERBOSE,
+""",
 )
 
 
@@ -669,7 +671,7 @@ def get_package_hashes(
     try:
         releases = data["releases"][version]
     except KeyError:
-        raise PackageError("No data found for version {0}".format(version))
+        raise PackageError("No data found for pacakge {0} version {1}".format(package, version))
 
     if python_versions:
         releases = filter_releases(releases, python_versions)
@@ -681,7 +683,7 @@ def get_package_hashes(
                 "{0} matching Python versions {1}".format(version, python_versions)
             )
         else:
-            raise PackageError("No releases could be found for {0}".format(version))
+            raise PackageError("No releases could be found for package {0} version {1}".format(package, version))
 
     hashes = list(
         get_releases_hashes(releases=releases, algorithm=algorithm, verbose=verbose)
@@ -739,6 +741,12 @@ def get_parser():
         default=False,
     )
     parser.add_argument(
+        "--add-all-hashes",
+        help="Set hashes for all mentioned packages in the requirements file.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "-i",
         "--interactive",
         help=(
@@ -775,7 +783,7 @@ def main():
     args = parser.parse_args()
 
     if (
-        args.update_all
+        (args.update_all or args.add_all_hashes)
         and args.packages
         and len(args.packages) == 1
         and os.path.isfile(args.packages[0])
@@ -791,7 +799,13 @@ def main():
         args.requirements_file = args.packages[0]
         args.packages = []
 
-    if args.update_all:
+    if args.update_all and args.add_all_hashes:
+        print(
+            "Can not combine the --update-all option with --all-all-hashes option.",
+            file=sys.stderr,
+        )
+        return 5
+    if args.update_all or args.add_all_hashes:
         if args.packages:
             print(
                 "Can not combine the --update-all option with a list of packages.",
@@ -801,12 +815,12 @@ def main():
     elif args.interactive:
         print(
             "--interactive (or -i) is only applicable together "
-            "with --update-all (or -u).",
+            "with --update-all (or -u) or --add-all-hashes.",
             file=sys.stderr,
         )
         return 4
     elif not args.packages:
-        print("If you don't use --update-all you must list packages.", file=sys.stderr)
+        print("If you don't use --update-all or --add-all-hashes you must list packages.", file=sys.stderr)
         parser.print_usage()
         return 3
 
@@ -814,6 +828,7 @@ def main():
         return run(
             args.packages,
             args.requirements_file,
+            not args.add_all_hashes,
             args.algorithm,
             args.python_version,
             verbose=args.verbose,
